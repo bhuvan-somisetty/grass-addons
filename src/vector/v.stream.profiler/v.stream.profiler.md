@@ -5,7 +5,7 @@ profiles, slope-accumulation (e.g., slope-area), and more for
 topographic analysis. It currently works only in a downstream-directed
 walk, for a single channel, from the chosen segment until the
 downstream-most point in the network. It takes in the adjacency
-structure supplied by [v.stream.network](v.stream.network).
+structure supplied by [v.stream.network](v.stream.network.html).
 
 ## REFERENCES
 

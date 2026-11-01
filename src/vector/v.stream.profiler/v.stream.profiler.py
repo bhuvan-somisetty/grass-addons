@@ -21,7 +21,7 @@
 # More information
 # Started 14 October 2016
 # %module
-# % description: Build a linked stream network: each link knows its downstream link
+# % description: Build long profiles and slope-area diagrams of a river network.
 # % keyword: vector
 # % keyword: stream network
 # % keyword: hydrology
@@ -80,8 +80,9 @@
 # %  answer: 1
 # %  required: no
 # %end
-# %option G_OPT_R_INPUT
+# %option
 # %  key: window
+# %  type: double
 # %  label: Averaging distance [map units]
 # %  required: no
 # %end
@@ -110,21 +111,16 @@
 # IMPORT MODULES #
 ##################
 # PYTHON
-import sys
 import numpy as np
 
 # GRASS
-from grass.pygrass.modules.shortcuts import general as g
-from grass.pygrass.modules.shortcuts import raster as r
-from grass.pygrass.modules.shortcuts import vector as v
-from grass.pygrass.gis import region
-from grass.pygrass import vector  # Change to "v"?
-from grass.script import vector_db_select
-from grass.pygrass.vector import Vector, VectorTopo
-from grass.pygrass.raster import RasterRow
-from grass.pygrass import utils
 from grass import script as gs
+from grass.pygrass import vector
+from grass.pygrass.modules.shortcuts import vector as v
+from grass.pygrass.raster import RasterRow
+from grass.pygrass.vector import VectorTopo
 from grass.pygrass.vector.geometry import Point
+from grass.script import vector_db_select
 
 ###################
 # UTILITY MODULES #
@@ -155,14 +151,10 @@ def moving_average(x, y, window):
 
 def lazy_import_matplotlib():
     """Lazy import matplotlib modules"""
-    global mpl
     global plt
 
     # lazy import optional dependencies
     try:
-        import matplotlib as mpl
-
-        mpl.use("WXAgg")
         from matplotlib import pyplot as plt
     except ModuleNotFoundError:
         gs.fatal(_("Matplotlib is not installed. Please, install it."))
@@ -177,11 +169,8 @@ def main():
 
     options, flags = gs.parser()
 
-    # lazy import py modules
-    lazy_import_matplotlib()
-
     # Parsing
-    window = float(options["window"])
+    window = float(options["window"]) if options["window"] else None
     accum_mult = float(options["accum_mult"])
     if options["units"] == "m2":
         accum_label = "Drainage area [m$^2$]"
@@ -193,11 +182,14 @@ def main():
         accum_label = "Water discharge [cfs]"
     else:
         accum_label = "Flow accumulation [$-$]"
-    plots = options["plots"].split(",")
+    plots = [p for p in options["plots"].split(",") if p] if options["plots"] else []
+
+    if plots:
+        lazy_import_matplotlib()
 
     # Attributes of streams
     colNames = np.array(vector_db_select(options["streams"])["columns"])
-    colValues = np.array(vector_db_select(options["streams"])["values"].values())
+    colValues = np.array(list(vector_db_select(options["streams"])["values"].values()))
     tostream = colValues[:, colNames == "tostream"].astype(int).squeeze()
     cats = colValues[:, colNames == "cat"].astype(int).squeeze()  # = "fromstream"
 
@@ -222,13 +214,17 @@ def main():
         coords = []
         _i = 0
         for i in range(len(data)):
-            if isinstance(data.read(i + 1), vector.geometry.Line):
-                if data.read(i + 1).cat in selected_cats:
-                    coords.append(data.read(i + 1).to_array())
+            feature = data.read(i + 1)
+            if isinstance(feature, vector.geometry.Line):
+                if feature.cat in selected_cats:
+                    coords.append(feature.to_array())
                     gs.core.percent(_i, len(selected_cats), 100.0 / len(selected_cats))
                     _i += 1
         gs.core.percent(1, 1, 1)
-        coords = np.vstack(np.array(coords))
+        data.close()
+        if not coords:
+            gs.fatal(_("No stream lines found for selected categories."))
+        coords = np.vstack(coords)
 
         _dx = np.diff(coords[:, 0])
         _dy = np.diff(coords[:, 1])
@@ -236,17 +232,7 @@ def main():
         x_downstream = x_downstream_0.copy()
 
     elif options["direction"] == "upstream":
-        # terminalCATS = list(options['cat'])
-        # while terminalCATS:
-        #
-        print("Upstream direction not yet active!")
-        return
-        """
-        # Add new lists for each successive upstream river
-        river_is_upstream =
-        while
-        full_river_cats
-        """
+        gs.fatal(_("Upstream direction not yet implemented."))
 
     # Network extraction
     if options["outstream"] != "":
@@ -276,7 +262,7 @@ def main():
             _i += 1
         DEM.close()
         z = np.array(z)
-        if options["window"] != "":
+        if window is not None:
             x_downstream, z = moving_average(x_downstream_0, z, window)
         gs.core.percent(1, 1, 1)
     else:
@@ -298,7 +284,7 @@ def main():
         slope.close()
         S = np.array(S)
         S_0 = S.copy()
-        if options["window"] != "":
+        if window is not None:
             x_downstream, S = moving_average(x_downstream_0, S, window)
         gs.core.percent(1, 1, 1)
     else:
@@ -320,38 +306,39 @@ def main():
         accumulation.close()
         A = np.array(A)
         A_0 = A.copy()
-        if options["window"] != "":
+        if window is not None:
             x_downstream, A = moving_average(x_downstream_0, A, window)
         gs.core.percent(1, 1, 1)
     else:
         _include_A = False
 
     # Plotting
-    if "LongProfile" in plots:
-        plt.figure()
-        plt.plot(x_downstream / 1000.0, z, "k-", linewidth=2)
-        plt.xlabel("Distance downstream [km]", fontsize=16)
-        plt.ylabel("Elevation [m]", fontsize=20)
-        plt.tight_layout()
-    if "SlopeAccum" in plots:
-        plt.figure()
-        plt.loglog(A, S, "ko", linewidth=2)
-        plt.xlabel(accum_label, fontsize=20)
-        plt.ylabel("Slope [$-$]", fontsize=20)
-        plt.tight_layout()
-    if "SlopeDistance" in plots:
-        plt.figure()
-        plt.plot(x_downstream / 1000.0, S, "k-", linewidth=2)
-        plt.xlabel("Distance downstream [km]", fontsize=16)
-        plt.ylabel("Slope [$-$]", fontsize=20)
-        plt.tight_layout()
-    if "AccumDistance" in plots:
-        plt.figure()
-        plt.plot(x_downstream / 1000.0, A, "k-", linewidth=2)
-        plt.xlabel("Distance downstream [km]", fontsize=16)
-        plt.ylabel(accum_label, fontsize=20)
-        plt.tight_layout()
-    plt.show()
+    if plots:
+        if "LongProfile" in plots:
+            plt.figure()
+            plt.plot(x_downstream / 1000.0, z, "k-", linewidth=2)
+            plt.xlabel("Distance downstream [km]", fontsize=16)
+            plt.ylabel("Elevation [m]", fontsize=20)
+            plt.tight_layout()
+        if "SlopeAccum" in plots:
+            plt.figure()
+            plt.loglog(A, S, "ko", linewidth=2)
+            plt.xlabel(accum_label, fontsize=20)
+            plt.ylabel("Slope [$-$]", fontsize=20)
+            plt.tight_layout()
+        if "SlopeDistance" in plots:
+            plt.figure()
+            plt.plot(x_downstream / 1000.0, S, "k-", linewidth=2)
+            plt.xlabel("Distance downstream [km]", fontsize=16)
+            plt.ylabel("Slope [$-$]", fontsize=20)
+            plt.tight_layout()
+        if "AccumDistance" in plots:
+            plt.figure()
+            plt.plot(x_downstream / 1000.0, A, "k-", linewidth=2)
+            plt.xlabel("Distance downstream [km]", fontsize=16)
+            plt.ylabel(accum_label, fontsize=20)
+            plt.tight_layout()
+        plt.show()
 
     # Saving data
     if options["outfile_original"] != "":
@@ -372,6 +359,10 @@ def main():
         outfile = np.vstack((header, outfile))
         np.savetxt(options["outfile_original"], outfile, "%s")
     if options["outfile_smoothed"] != "":
+        if window is None:
+            gs.fatal(
+                _("Averaging distance 'window' must be specified for smoothed output.")
+            )
         header = ["x_downstream", "E", "N"]
         # E, N on smoothed grid
         x_downstream, E = moving_average(x_downstream_0, coords[:, 0], window)
